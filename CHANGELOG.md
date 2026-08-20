@@ -4,7 +4,12 @@ All notable changes to the Praxsuite SDK for Python.
 
 ## [1.0.0] - 2026-08-20
 
-First release. Zero dependencies, Python 3.9+, fully typed.
+First release. Zero dependencies, Python 3.10+, fully typed.
+
+The floor is 3.10 rather than 3.9 on purpose. 3.9 reached end of life in October 2025, mypy no
+longer accepts it as a target, and `python-build-standalone` no longer publishes a build for it -
+so nothing in the toolchain can provision one, and CI could not have tested a 3.9 claim even if we
+made it. Advertising support we cannot exercise would imply a security posture we cannot back.
 
 ### Added
 

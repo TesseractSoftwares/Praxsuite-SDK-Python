@@ -30,7 +30,7 @@ for row in page:
 pip install praxsuite
 ```
 
-Python 3.9+. Fully typed, ships `py.typed`.
+Python 3.10+. Fully typed, ships `py.typed`.
 
 ## Configure
 

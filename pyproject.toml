@@ -7,7 +7,7 @@ name = "praxsuite"
 version = "1.0.0"
 description = "Praxsuite SDK for Python - auth, queries and server-authoritative endpoints. Zero dependencies."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Tesseract Softwares SpA" }]
 keywords = ["praxsuite", "backend", "baas", "sdk", "database", "auth", "fastapi"]
@@ -15,7 +15,6 @@ classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -51,8 +50,7 @@ testpaths = ["tests"]
 filterwarnings = ["error"]
 
 [tool.mypy]
-# mypy no longer accepts a 3.9 target, but the package still supports 3.9 - the pipeline runs
-# the suite on 3.9 as well as the newest release, so that claim is tested rather than asserted.
+# Matches requires-python, so the checker and the packaging metadata cannot drift apart.
 python_version = "3.10"
 strict = true
 files = ["src/praxsuite"]
