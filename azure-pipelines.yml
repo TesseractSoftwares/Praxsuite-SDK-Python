@@ -4,9 +4,9 @@
 # master:             validate, build a wheel and sdist, mirror the source to the public GitHub
 #                     repo, and cut a GitHub Release carrying both artefacts.
 #
-# Validation runs the offline suite on the OLDEST and NEWEST supported Python, so the
-# requires-python floor is tested rather than asserted. Publish depends on Validate, so a broken
-# floor stops a release rather than shipping with it.
+# Validation runs the offline suite on the OLDEST and NEWEST supported Python. The package claims
+# 3.9 support and mypy will not target 3.9 any more, so the only honest way to back that claim is
+# to run the tests there - and Publish depends on Validate, so nothing ships until it passes.
 
 trigger:
   branches:
@@ -43,8 +43,8 @@ stages:
         matrix:
           # The floor the package advertises, and the newest release. A break at either end is a
           # break for a consumer.
-          python310:
-            pythonVersion: '3.10'
+          python39:
+            pythonVersion: '3.9'
           python313:
             pythonVersion: '3.13'
       steps:
