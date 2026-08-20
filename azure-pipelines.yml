@@ -152,7 +152,10 @@ stages:
         # consumer. .venv is excluded because uv unpacks a full CPython into it.
         - script: |
             set -e
-            if grep -rEn 'sk_live_[A-Za-z0-9]{16,}' \n                 --include='*.py' --include='*.toml' --include='*.md' --include='*.yml' \n                 --include='*.cfg' --exclude-dir=.git --exclude-dir=dist \n                 --exclude-dir=build --exclude-dir=.venv --exclude-dir=__pycache__ . ; then
+            if grep -rEn 'sk_live_[A-Za-z0-9]{16,}' \
+                 --include='*.py' --include='*.toml' --include='*.md' --include='*.yml' \
+                 --include='*.cfg' --exclude-dir=.git --exclude-dir=dist \
+                 --exclude-dir=build --exclude-dir=.venv --exclude-dir=__pycache__ . ; then
               echo "##vso[task.logissue type=error]A Praxsuite secret key is present. Revoke it now - this repo is mirrored publicly."
               exit 1
             fi
