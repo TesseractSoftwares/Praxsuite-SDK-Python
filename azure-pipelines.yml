@@ -48,26 +48,49 @@ stages:
           python313:
             pythonVersion: '3.13'
       steps:
-        - task: UsePythonVersion@0
-          displayName: 'Use Python $(pythonVersion)'
-          inputs:
-            versionSpec: '$(pythonVersion)'
+        # uv rather than UsePythonVersion@0. That task needs the interpreter in the agent's tool
+        # cache and falls back to downloading from the GitHub Actions python-versions registry,
+        # which this self-hosted pool cannot do - it failed with "Could not find Python matching
+        # spec 3.13" on the first run. uv fetches a standalone CPython itself, needs no sudo, and
+        # is the only way this pool can honestly test two interpreters.
+        #
+        # Pinned, not "latest": a "latest" link turns an unrelated upstream release into a broken
+        # build here, and the checksum is published so it is verified rather than trusted.
+        - script: |
+            set -e
+            UV_VERSION=0.12.5
+            BASE="https://github.com/astral-sh/uv/releases/download/$UV_VERSION"
+            TARBALL="uv-x86_64-unknown-linux-gnu.tar.gz"
+
+            cd "$(Agent.TempDirectory)"
+            curl -fsSL "$BASE/$TARBALL" -o "$TARBALL"
+            curl -fsSL "$BASE/$TARBALL.sha256" -o "$TARBALL.sha256"
+            sha256sum -c "$TARBALL.sha256"
+
+            tar -xzf "$TARBALL"
+            UV="$(Agent.TempDirectory)/uv-x86_64-unknown-linux-gnu/uv"
+            chmod +x "$UV"
+            "$UV" --version
+            echo "##vso[task.setvariable variable=uvBin]$UV"
+          displayName: 'Install uv'
 
         - script: |
             set -e
-            python --version
-            python -m pip install --upgrade pip
+            cd "$(Build.SourcesDirectory)"
+            "$(uvBin)" python install $(pythonVersion)
+            "$(uvBin)" venv --python $(pythonVersion) .venv
+            .venv/bin/python --version
             # Installing the package itself, not just its test deps: this also proves the build
             # backend and the packaging metadata work on this interpreter.
-            python -m pip install -e ".[dev]"
-          displayName: 'Install'
+            "$(uvBin)" pip install --python .venv/bin/python -e ".[dev]"
+          displayName: 'Install on Python $(pythonVersion)'
 
         - script: |
             set -e
+            cd "$(Build.SourcesDirectory)"
             # An empty dependency list is a feature of this package, so it is asserted rather than
-            # trusted. Anything beyond the package itself and the dev extras means a dependency
-            # crept in.
-            python - <<'PY'
+            # trusted. Anything outside the dev extra means a dependency crept in.
+            .venv/bin/python - <<'PY'
             import importlib.metadata as md
             requires = md.requires("praxsuite") or []
             runtime = [r for r in requires if "extra ==" not in r]
@@ -80,7 +103,8 @@ stages:
 
         - script: |
             set -e
-            python -m pytest -q --junitxml=$(Agent.TempDirectory)/pytest-$(pythonVersion).xml
+            cd "$(Build.SourcesDirectory)"
+            .venv/bin/python -m pytest -q --junitxml="$(Agent.TempDirectory)/pytest-$(pythonVersion).xml"
           displayName: 'Run tests'
 
         - task: PublishTestResults@2
@@ -96,26 +120,39 @@ stages:
     - job: Types
       displayName: 'Types and secrets'
       steps:
-        - task: UsePythonVersion@0
-          inputs:
-            versionSpec: '3.13'
+        - script: |
+            set -e
+            UV_VERSION=0.12.5
+            BASE="https://github.com/astral-sh/uv/releases/download/$UV_VERSION"
+            TARBALL="uv-x86_64-unknown-linux-gnu.tar.gz"
+
+            cd "$(Agent.TempDirectory)"
+            curl -fsSL "$BASE/$TARBALL" -o "$TARBALL"
+            curl -fsSL "$BASE/$TARBALL.sha256" -o "$TARBALL.sha256"
+            sha256sum -c "$TARBALL.sha256"
+
+            tar -xzf "$TARBALL"
+            UV="$(Agent.TempDirectory)/uv-x86_64-unknown-linux-gnu/uv"
+            chmod +x "$UV"
+            echo "##vso[task.setvariable variable=uvBin]$UV"
+          displayName: 'Install uv'
 
         - script: |
             set -e
-            python -m pip install --upgrade pip
-            python -m pip install -e ".[dev]"
+            cd "$(Build.SourcesDirectory)"
+            "$(uvBin)" python install 3.13
+            "$(uvBin)" venv --python 3.13 .venv
+            "$(uvBin)" pip install --python .venv/bin/python -e ".[dev]"
             # The package ships py.typed, so its annotations are a promise to consumers rather
             # than decoration.
-            python -m mypy
+            .venv/bin/python -m mypy
           displayName: 'mypy --strict'
 
         # This repo is mirrored to a PUBLIC GitHub repo, so a key committed here reaches every
-        # consumer.
+        # consumer. .venv is excluded because uv unpacks a full CPython into it.
         - script: |
             set -e
-            if grep -rEn 'sk_live_[A-Za-z0-9]{16,}' \
-                 --include='*.py' --include='*.toml' --include='*.md' --include='*.yml' \
-                 --include='*.cfg' --exclude-dir=.git --exclude-dir=dist --exclude-dir=build . ; then
+            if grep -rEn 'sk_live_[A-Za-z0-9]{16,}' \n                 --include='*.py' --include='*.toml' --include='*.md' --include='*.yml' \n                 --include='*.cfg' --exclude-dir=.git --exclude-dir=dist \n                 --exclude-dir=build --exclude-dir=.venv --exclude-dir=__pycache__ . ; then
               echo "##vso[task.logissue type=error]A Praxsuite secret key is present. Revoke it now - this repo is mirrored publicly."
               exit 1
             fi
@@ -135,9 +172,25 @@ stages:
           fetchDepth: 0
           persistCredentials: true
 
-        - task: UsePythonVersion@0
-          inputs:
-            versionSpec: '3.13'
+        # Same reason as the Validate stage: UsePythonVersion cannot provision an interpreter on
+        # this pool.
+        - script: |
+            set -e
+            UV_VERSION=0.12.5
+            BASE="https://github.com/astral-sh/uv/releases/download/$UV_VERSION"
+            TARBALL="uv-x86_64-unknown-linux-gnu.tar.gz"
+
+            cd "$(Agent.TempDirectory)"
+            curl -fsSL "$BASE/$TARBALL" -o "$TARBALL"
+            curl -fsSL "$BASE/$TARBALL.sha256" -o "$TARBALL.sha256"
+            sha256sum -c "$TARBALL.sha256"
+
+            tar -xzf "$TARBALL"
+            UV="$(Agent.TempDirectory)/uv-x86_64-unknown-linux-gnu/uv"
+            chmod +x "$UV"
+            "$UV" --version
+            echo "##vso[task.setvariable variable=uvBin]$UV"
+          displayName: 'Install uv'
 
         - task: AzureKeyVault@2
           displayName: 'Read GitHub token'
@@ -162,8 +215,8 @@ stages:
 
         - script: |
             set -e
-            python -m pip install --upgrade pip build
-            python -m build --outdir "$(Build.ArtifactStagingDirectory)/package"
+            cd "$(Build.SourcesDirectory)"
+            "$(uvBin)" build --out-dir "$(Build.ArtifactStagingDirectory)/package"
             ls -la "$(Build.ArtifactStagingDirectory)/package/"
           displayName: 'Build wheel and sdist'
 
