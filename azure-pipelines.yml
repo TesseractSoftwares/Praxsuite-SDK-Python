@@ -1,0 +1,289 @@
+# Praxsuite SDK for Python - validate, build, and mirror to GitHub
+#
+# PR and development: validate only.
+# master:             validate, build a wheel and sdist, mirror the source to the public GitHub
+#                     repo, and cut a GitHub Release carrying both artefacts.
+#
+# Validation runs the offline suite on the OLDEST and NEWEST supported Python. The package claims
+# 3.9 support and mypy will not target 3.9 any more, so the only honest way to back that claim is
+# to run the tests there - and Publish depends on Validate, so nothing ships until it passes.
+
+trigger:
+  branches:
+    include:
+      - master
+      - development
+  paths:
+    exclude:
+      - README.md
+      - CHANGELOG.md
+
+pr:
+  branches:
+    include:
+      - master
+      - development
+
+pool:
+  name: tesseract-buildpool
+
+variables:
+  isMaster: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
+  githubRepo: 'TesseractSoftwares/Praxsuite-SDK-Python'
+
+stages:
+
+# ─────────────────────────────────────────────────────────────────────────────
+- stage: Validate
+  displayName: 'Test'
+  jobs:
+    - job: Tests
+      displayName: 'Tests'
+      strategy:
+        matrix:
+          # The floor the package advertises, and the newest release. A break at either end is a
+          # break for a consumer.
+          python39:
+            pythonVersion: '3.9'
+          python313:
+            pythonVersion: '3.13'
+      steps:
+        - task: UsePythonVersion@0
+          displayName: 'Use Python $(pythonVersion)'
+          inputs:
+            versionSpec: '$(pythonVersion)'
+
+        - script: |
+            set -e
+            python --version
+            python -m pip install --upgrade pip
+            # Installing the package itself, not just its test deps: this also proves the build
+            # backend and the packaging metadata work on this interpreter.
+            python -m pip install -e ".[dev]"
+          displayName: 'Install'
+
+        - script: |
+            set -e
+            # An empty dependency list is a feature of this package, so it is asserted rather than
+            # trusted. Anything beyond the package itself and the dev extras means a dependency
+            # crept in.
+            python - <<'PY'
+            import importlib.metadata as md
+            requires = md.requires("praxsuite") or []
+            runtime = [r for r in requires if "extra ==" not in r]
+            if runtime:
+                print("##vso[task.logissue type=error]praxsuite declares runtime dependencies: %s" % runtime)
+                raise SystemExit(1)
+            print("No runtime dependencies, as intended.")
+            PY
+          displayName: 'Assert zero dependencies'
+
+        - script: |
+            set -e
+            python -m pytest -q --junitxml=$(Agent.TempDirectory)/pytest-$(pythonVersion).xml
+          displayName: 'Run tests'
+
+        - task: PublishTestResults@2
+          displayName: 'Publish test results'
+          condition: succeededOrFailed()
+          inputs:
+            testResultsFormat: 'JUnit'
+            testResultsFiles: '**/pytest-*.xml'
+            searchFolder: '$(Agent.TempDirectory)'
+            testRunTitle: 'Python $(pythonVersion)'
+            failTaskOnFailedTests: true
+
+    - job: Types
+      displayName: 'Types and secrets'
+      steps:
+        - task: UsePythonVersion@0
+          inputs:
+            versionSpec: '3.13'
+
+        - script: |
+            set -e
+            python -m pip install --upgrade pip
+            python -m pip install -e ".[dev]"
+            # The package ships py.typed, so its annotations are a promise to consumers rather
+            # than decoration.
+            python -m mypy
+          displayName: 'mypy --strict'
+
+        # This repo is mirrored to a PUBLIC GitHub repo, so a key committed here reaches every
+        # consumer.
+        - script: |
+            set -e
+            if grep -rEn 'sk_live_[A-Za-z0-9]{16,}' \
+                 --include='*.py' --include='*.toml' --include='*.md' --include='*.yml' \
+                 --include='*.cfg' --exclude-dir=.git --exclude-dir=dist --exclude-dir=build . ; then
+              echo "##vso[task.logissue type=error]A Praxsuite secret key is present. Revoke it now - this repo is mirrored publicly."
+              exit 1
+            fi
+            echo "No secret keys found."
+          displayName: 'Scan for leaked secret keys'
+
+# ─────────────────────────────────────────────────────────────────────────────
+- stage: Publish
+  displayName: 'Build and mirror to GitHub'
+  dependsOn: Validate
+  condition: and(succeeded(), eq(variables.isMaster, true))
+  jobs:
+    - job: Publish
+      steps:
+        # Full history: the mirror push needs real commits, not a shallow clone.
+        - checkout: self
+          fetchDepth: 0
+          persistCredentials: true
+
+        - task: UsePythonVersion@0
+          inputs:
+            versionSpec: '3.13'
+
+        - task: AzureKeyVault@2
+          displayName: 'Read GitHub token'
+          inputs:
+            azureSubscription: 'sc-acr-push-core-prod'
+            KeyVaultName: 'prax-cicd-kv'
+            SecretsFilter: 'GITHUB-SDK-MIRROR-TOKEN'
+            RunAsPreJob: false
+
+        # pyproject.toml is the single source of truth for the version, so a release tag can never
+        # disagree with what a consumer installs.
+        - script: |
+            set -e
+            VERSION=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+            if [ -z "$VERSION" ]; then
+              echo "##vso[task.logissue type=error]No version line in pyproject.toml."
+              exit 1
+            fi
+            echo "Package version: $VERSION"
+            echo "##vso[task.setvariable variable=pkgVersion]$VERSION"
+          displayName: 'Read package version'
+
+        - script: |
+            set -e
+            python -m pip install --upgrade pip build
+            python -m build --outdir "$(Build.ArtifactStagingDirectory)/package"
+            ls -la "$(Build.ArtifactStagingDirectory)/package/"
+          displayName: 'Build wheel and sdist'
+
+        - task: PublishBuildArtifacts@1
+          displayName: 'Publish package artifact'
+          inputs:
+            PathtoPublish: '$(Build.ArtifactStagingDirectory)/package'
+            ArtifactName: 'python-package'
+
+        - script: |
+            set -e
+            git config user.email "ci@tesseractsoftwares.com"
+            git config user.name  "Tesseract CI"
+
+            git remote remove github 2>/dev/null || true
+            git remote add github "https://x-access-token:$(GITHUB-SDK-MIRROR-TOKEN)@github.com/$(githubRepo).git"
+
+            # Read the mirror's head BEFORE fetching. --force-with-lease cannot protect anything if
+            # a fetch runs first: fetching sets the remote-tracking ref to whatever GitHub
+            # currently has, so the lease always matches and the push always wins. That is not
+            # hypothetical - it silently reset commits pushed straight to a sibling SDK's mirror.
+            REMOTE_SHA=$(git ls-remote github refs/heads/master | cut -f1)
+            if [ -n "$REMOTE_SHA" ]; then
+              git fetch github master
+              if ! git merge-base --is-ancestor "$REMOTE_SHA" HEAD; then
+                echo "##vso[task.logissue type=error]github.com/$(githubRepo) is at $REMOTE_SHA, which is not an ancestor of this build. Someone pushed to the mirror directly. Reconcile it - do not overwrite."
+                exit 1
+              fi
+            fi
+
+            echo "Mirroring master to github.com/$(githubRepo)"
+            if ! git push github HEAD:refs/heads/master; then
+              echo "##vso[task.logissue type=error]Mirror push failed. Check the token has contents:write on the mirror."
+              exit 1
+            fi
+            echo "Mirror complete."
+          displayName: 'Mirror source to GitHub'
+
+        # Every call captures the HTTP status and prints GitHub's response when it is not what we
+        # expect. curl -f is deliberately absent: it exits 22 with no message and no body, which
+        # cost three builds on a sibling SDK failing with an empty log while GitHub was willing to
+        # say plainly what was wrong.
+        - script: |
+            TAG="v$(pkgVersion)"
+            API="https://api.github.com/repos/$(githubRepo)"
+            AUTH="Authorization: Bearer $(GITHUB-SDK-MIRROR-TOKEN)"
+            OUT="$(Build.ArtifactStagingDirectory)/package"
+
+            # Idempotent, but "already exists" is not on its own good enough to report success: a
+            # release created by a run that then failed its upload has no asset, and an early exit
+            # would report green forever while nobody could download anything.
+            CODE=$(curl -sS -o /tmp/existing.json -w '%{http_code}' -H "$AUTH" "$API/releases/tags/$TAG")
+            if [ "$CODE" = "200" ]; then
+              if grep -q '"state": *"uploaded"' /tmp/existing.json; then
+                echo "Release $TAG already exists with an asset attached - nothing to publish."
+                exit 0
+              fi
+              echo "##vso[task.logissue type=error]Release $TAG exists but has no asset attached. A previous run created it and failed to upload. Delete the release (or attach the asset by hand) and re-run."
+              exit 1
+            fi
+            if [ "$CODE" != "404" ]; then
+              echo "##vso[task.logissue type=error]HTTP $CODE checking whether $TAG exists. GitHub said:"
+              cat /tmp/existing.json; echo
+              exit 1
+            fi
+
+            # No double quotes and no newlines in the notes: escaped quotes here become real quotes
+            # once the shell expands them, and the body stops being valid JSON.
+            NOTES="Install with pip install praxsuite. Zero dependencies, Python 3.9+. See CHANGELOG.md for what changed."
+            CODE=$(curl -sS -o /tmp/release.json -w '%{http_code}' -X POST \
+              -H "$AUTH" -H "Content-Type: application/json" -H "Accept: application/vnd.github+json" \
+              "$API/releases" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"Praxsuite SDK for Python $(pkgVersion)\",\"body\":\"$NOTES\",\"draft\":false,\"prerelease\":false}")
+            if [ "$CODE" != "201" ]; then
+              echo "##vso[task.logissue type=error]GitHub refused to create release $TAG (HTTP $CODE). It said:"
+              cat /tmp/release.json; echo
+              exit 1
+            fi
+
+            RELEASE_ID=$(grep -o '"id": *[0-9]*' /tmp/release.json | head -1 | tr -dc '0-9')
+            if [ -z "$RELEASE_ID" ]; then
+              echo "##vso[task.logissue type=error]Release $TAG was created but its id could not be read from:"
+              cat /tmp/release.json; echo
+              exit 1
+            fi
+            echo "Created release $TAG (id $RELEASE_ID)"
+
+            # Both artefacts: the wheel is what pip installs, the sdist is what a distro packager
+            # or an air-gapped build needs. ${F##*/} rather than $(basename ...) - ADO reads
+            # $(...) as its own variable syntax and would pass the text through literally,
+            # producing a release with no asset while the build stayed green.
+            UPLOADED=0
+            for F in "$OUT"/*.whl "$OUT"/*.tar.gz; do
+              [ -f "$F" ] || continue
+              CODE=$(curl -sS -o /tmp/asset.json -w '%{http_code}' -X POST \
+                -H "$AUTH" -H "Content-Type: application/octet-stream" \
+                --data-binary @"$F" \
+                "https://uploads.github.com/repos/$(githubRepo)/releases/$RELEASE_ID/assets?name=${F##*/}")
+              if [ "$CODE" != "201" ]; then
+                echo "##vso[task.logissue type=error]Uploading ${F##*/} returned HTTP $CODE. GitHub said:"
+                cat /tmp/asset.json; echo
+                exit 1
+              fi
+              echo "  uploaded ${F##*/}"
+              UPLOADED=$((UPLOADED + 1))
+            done
+
+            if [ "$UPLOADED" -lt 2 ]; then
+              echo "##vso[task.logissue type=error]Expected a wheel and an sdist, uploaded $UPLOADED. Contents of $OUT:"
+              ls -la "$OUT"
+              exit 1
+            fi
+
+            # Verify rather than trust. A release that exists with nothing attached is worse than a
+            # failed build, because the pipeline reports success and nobody looks again.
+            ATTACHED=$(curl -sS -H "$AUTH" "$API/releases/tags/$TAG" | grep -c '"state": *"uploaded"')
+            if [ "$ATTACHED" -lt 2 ]; then
+              echo "##vso[task.logissue type=error]Release $TAG reports only $ATTACHED uploaded asset(s) after two successful uploads."
+              exit 1
+            fi
+
+            echo "Published release $TAG with $ATTACHED asset(s)"
+          displayName: 'Cut GitHub release'

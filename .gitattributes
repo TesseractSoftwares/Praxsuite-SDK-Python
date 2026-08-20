@@ -1,0 +1,6 @@
+# The pipeline and the sources are read by tools that expect LF; a Windows clone would
+# otherwise commit CRLF back.
+* text=auto eol=lf
+*.png binary
+*.whl binary
+*.gz binary

@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "praxsuite"
+version = "1.0.0"
+description = "Praxsuite SDK for Python - auth, queries and server-authoritative endpoints. Zero dependencies."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Tesseract Softwares SpA" }]
+keywords = ["praxsuite", "backend", "baas", "sdk", "database", "auth", "fastapi"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+
+# Deliberately empty, and worth keeping that way. Everything is standard library, so installing
+# this adds nothing to a consumer's lock file - which is the difference between "usable" and
+# "argued about" in a locked service image or a reproducible notebook.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "mypy>=1.8"]
+
+[project.urls]
+Homepage = "https://praxsuite.com"
+Source = "https://github.com/TesseractSoftwares/Praxsuite-SDK-Python"
+Changelog = "https://github.com/TesseractSoftwares/Praxsuite-SDK-Python/blob/master/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/praxsuite"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/praxsuite", "tests", "README.md", "LICENSE", "CHANGELOG.md", "SECURITY.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Turn warnings into failures. A coroutine that is never awaited raises RuntimeWarning, and that
+# is exactly the class of mistake these tests exist to catch.
+filterwarnings = ["error"]
+
+[tool.mypy]
+# mypy no longer accepts a 3.9 target, but the package still supports 3.9 - the pipeline runs
+# the suite on 3.9 as well as the newest release, so that claim is tested rather than asserted.
+python_version = "3.10"
+strict = true
+files = ["src/praxsuite"]
